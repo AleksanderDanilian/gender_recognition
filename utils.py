@@ -1,10 +1,15 @@
+from tensorflow.python.keras.models import load_model
+from tensorflow.keras import backend as K
+import collections
+import contextlib
 import os
-import soundfile as sf
+import struct
+import sys
+import wave
 import librosa
 import numpy as np
 import webrtcvad
-from tensorflow.python.keras.models import load_model
-from tensorflow.keras import backend as K
+import soundfile as sf
 
 
 def f1(y_true, y_pred):
@@ -36,51 +41,6 @@ def f1(y_true, y_pred):
     return 2 * ((precision * recall) / (precision + recall + K.epsilon()))
 
 
-def cut_signal(file, save_folder='', window=1, s_rate=8000, amplify=1, use_array=True, filter_noise=False):
-    """
-    Функция для нарезки аудио на равные отрезки.
-    :param file: str or np.array, путь к файлу или сам файл, в зав-ти от параметра use_array
-    :param save_folder: str, путь к папке для сохранения группы файлов длинной window
-    :param window: float, длинна нарезки аудио файлов в секундах
-    :param s_rate: int, sampling rate, частота дискретизации
-    :param amplify: int, усиление сигнала, если требуется
-    :param use_array: использовать массивы как для подачи файлов в функцию, так и для вывода из нее (True для продакшна).
-    :param filter_noise: Отфильтровывать ли отрезки с малой мощностью сигнала.
-    :return:
-    cut_signal_array: list, набор массивов временного сигнала длинной window секунд.
-    """
-    if not use_array:
-        signal, s_rate = librosa.load(file, sr=s_rate, dtype=np.float32)
-    else:
-        signal = file
-
-    signal = signal * amplify
-    frames_in_window = s_rate * window
-    windows_in_signal = int(len(signal) / frames_in_window)
-    cut_signal_array = []
-    for i in range(windows_in_signal):
-        if filter_noise:
-            filter_ = sum(abs(signal[i * frames_in_window: (i + 1) * frames_in_window]))
-            if filter_ > 300:  # сохраняем только шумные отрезки
-                if use_array:
-                    cut_signal_array.append(signal[i * frames_in_window: (i + 1) * frames_in_window])
-                else:
-                    save_name = os.path.basename(file)
-                    sf.write(os.path.join(save_folder, str(i) + save_name),
-                             signal[i * frames_in_window: (i + 1) * frames_in_window], s_rate)
-            else:
-                continue
-        else:
-            if use_array:
-                cut_signal_array.append(signal[i * frames_in_window: (i + 1) * frames_in_window])
-            else:
-                save_name = os.path.basename(file)
-                sf.write(os.path.join(save_folder, str(i) + save_name),
-                         signal[i * frames_in_window: (i + 1) * frames_in_window], s_rate)
-
-    return cut_signal_array
-
-
 def get_audio_features(file, mfcc=True, chroma_stft=False, rms=False, spec_cent=False, spec_bw=False,
                        rolloff=False, zcr=False, s_rate=8000, use_array=False):
     """
@@ -109,28 +69,205 @@ def get_audio_features(file, mfcc=True, chroma_stft=False, rms=False, spec_cent=
         signal, s_rate = librosa.load(file, sr=s_rate, dtype='float32')
 
     if mfcc:
-        mfcc_ = librosa.feature.mfcc(y=signal, sr=s_rate)  # Мел кепстральные коэффициенты
+        mfcc_ = librosa.feature.mfcc(y=signal, sr=s_rate, n_mfcc=40)  # Мел кепстральные коэффициенты
         audio_features_mfcc.extend(mfcc_)  # .reshape((mfcc_.shape[1], mfcc_.shape[2])))
     if chroma_stft:
-        chroma_stft_ = np.mean(librosa.feature.chroma_stft(y=signal, sr=s_rate))  # Частота цветности
-        audio_features_rest.append(chroma_stft_)
+        chroma_stft_ = librosa.feature.chroma_stft(y=signal, sr=s_rate)  # Частота цветности
+        chroma_stats = [np.mean(chroma_stft_), np.min(chroma_stft_), np.max(chroma_stft_), np.median(chroma_stft_),
+                        np.std(chroma_stft_)]
+        audio_features_rest.append(chroma_stats)
     if rms:
-        rms_ = np.mean(librosa.feature.rms(y=signal))  # Среднеквадратичная амплитуда
-        audio_features_rest.append(rms_)
+        rms_ = librosa.feature.rms(y=signal)  # Среднеквадратичная амплитуда
+        rms_stats = [np.mean(rms_), np.min(rms_), np.max(rms_), np.median(rms_),
+                     np.std(rms_)]
+        audio_features_rest.append(rms_stats)
     if spec_cent:
-        spec_cent_ = np.mean(librosa.feature.spectral_centroid(y=signal, sr=s_rate))  # Спектральный центроид
-        audio_features_rest.append(spec_cent_)
+        spec_cent_ = librosa.feature.spectral_centroid(y=signal, sr=s_rate)  # Спектральный центроид
+        spec_cent_stats = [np.mean(spec_cent_), np.min(spec_cent_), np.max(spec_cent_), np.median(spec_cent_),
+                           np.std(spec_cent_)]
+        audio_features_rest.append(spec_cent_stats)
     if spec_bw:
-        spec_bw_ = np.mean(librosa.feature.spectral_bandwidth(y=signal, sr=s_rate))  # Ширина полосы частот
-        audio_features_rest.append(spec_bw_)
+        spec_bw_ = librosa.feature.spectral_bandwidth(y=signal, sr=s_rate)  # Ширина полосы частот
+        spec_bw_stats = [np.mean(spec_bw_), np.min(spec_bw_), np.max(spec_bw_), np.median(spec_bw_),
+                         np.std(spec_bw_)]
+        audio_features_rest.append(spec_bw_stats)
     if rolloff:
-        rolloff_ = np.mean(librosa.feature.spectral_rolloff(y=signal, sr=s_rate))  # Спектральный спад частоты
-        audio_features_rest.append(rolloff_)
+        rolloff_ = librosa.feature.spectral_rolloff(y=signal, sr=s_rate)  # Спектральный спад частоты
+        rolloff_stats = [np.mean(rolloff_), np.min(rolloff_), np.max(rolloff_), np.median(rolloff_),
+                         np.std(rolloff_)]
+        audio_features_rest.append(rolloff_stats)
     if zcr:
-        zcr_ = np.mean(librosa.feature.zero_crossing_rate(signal))  # Пересечения нуля
-        audio_features_rest.append(zcr_)
+        zcr_ = librosa.feature.zero_crossing_rate(signal)  # Пересечения нуля
+        zcr_stats = [np.mean(zcr_), np.min(zcr_), np.max(zcr_), np.median(zcr_),
+                     np.std(zcr_)]
+        audio_features_rest.append(zcr_stats)
 
     return audio_features_mfcc, audio_features_rest
+
+
+def read_wave(file, wav=True, sr=8000):
+    """Reads a .wav file.
+    Takes the path(of file in case binary input), and returns (PCM audio data, sample rate).
+    """
+
+    if wav:
+        print('file_being_sent', file)
+        signal, sample_rate = librosa.load(file, sr=8000)
+        print('Length of initial signal', len(signal))
+
+        signal = np.int16(signal * 32768)
+        tmp = [struct.pack('h', int(val)) for val in signal]
+        pcm_data = b''.join(tmp)
+
+        print(len(pcm_data), type(pcm_data))
+        return pcm_data, sample_rate
+    else:
+        return file, sr
+
+
+def write_wave(path, audio, sample_rate):
+    """Writes a .wav file.
+    Takes path, PCM audio data, and sample rate.
+    """
+    with contextlib.closing(wave.open(path, 'wb')) as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(audio)
+
+
+class Frame(object):
+    """Represents a "frame" of audio data."""
+
+    def __init__(self, bytes, timestamp, duration):
+        self.bytes = bytes
+        self.timestamp = timestamp
+        self.duration = duration
+
+
+def frame_generator(frame_duration_ms, audio, sample_rate):
+    """Generates audio frames from PCM audio data.
+    Takes the desired frame duration in milliseconds, the PCM data, and
+    the sample rate.
+    Yields Frames of the requested duration.
+    """
+    n = int(sample_rate * (frame_duration_ms / 1000.0) * 2)
+    offset = 0
+    timestamp = 0.0
+    duration = (float(n) / sample_rate) / 2.0
+    while offset + n < len(audio):
+        yield Frame(audio[offset:offset + n], timestamp, duration)
+        timestamp += duration
+        offset += n
+
+
+def vad_collector(sample_rate, frame_duration_ms,
+                  padding_duration_ms, vad, frames):
+    """Filters out non-voiced audio frames.
+    Given a webrtcvad.Vad and a source of audio frames, yields only
+    the voiced audio.
+    Uses a padded, sliding window algorithm over the audio frames.
+    When more than 90% of the frames in the window are voiced (as
+    reported by the VAD), the collector triggers and begins yielding
+    audio frames. Then the collector waits until 90% of the frames in
+    the window are unvoiced to detrigger.
+    The window is padded at the front and back to provide a small
+    amount of silence or the beginnings/endings of speech around the
+    voiced frames.
+    Arguments:
+    sample_rate - The audio sample rate, in Hz.
+    frame_duration_ms - The frame duration in milliseconds.
+    padding_duration_ms - The amount to pad the window, in milliseconds.
+    vad - An instance of webrtcvad.Vad.
+    frames - a source of audio frames (sequence or generator).
+    Returns: A generator that yields PCM audio data.
+    """
+    num_padding_frames = int(padding_duration_ms / frame_duration_ms)
+    # We use a deque for our sliding window/ring buffer.
+    ring_buffer = collections.deque(maxlen=num_padding_frames)
+    # We have two states: TRIGGERED and NOTTRIGGERED. We start in the
+    # NOTTRIGGERED state.
+    triggered = False
+
+    voiced_frames = []
+    for frame in frames:
+        is_speech = vad.is_speech(frame.bytes, sample_rate)
+
+        sys.stdout.write('1' if is_speech else '0')
+        if not triggered:
+            ring_buffer.append((frame, is_speech))
+            num_voiced = len([f for f, speech in ring_buffer if speech])
+            # If we're NOTTRIGGERED and more than 90% of the frames in
+            # the ring buffer are voiced frames, then enter the
+            # TRIGGERED state.
+            if num_voiced > 0.9 * ring_buffer.maxlen:
+                triggered = True
+                sys.stdout.write('+(%s)' % (ring_buffer[0][0].timestamp,))
+                # We want to yield all the audio we see from now until
+                # we are NOTTRIGGERED, but we have to start with the
+                # audio that's already in the ring buffer.
+                for f, s in ring_buffer:
+                    voiced_frames.append(f)
+                ring_buffer.clear()
+        else:
+            # We're in the TRIGGERED state, so collect the audio data
+            # and add it to the ring buffer.
+            voiced_frames.append(frame)
+            ring_buffer.append((frame, is_speech))
+            num_unvoiced = len([f for f, speech in ring_buffer if not speech])
+            # If more than 90% of the frames in the ring buffer are
+            # unvoiced, then enter NOTTRIGGERED and yield whatever
+            # audio we've collected.
+            if num_unvoiced > 0.9 * ring_buffer.maxlen:
+                sys.stdout.write('-(%s)' % (frame.timestamp + frame.duration))
+                triggered = False
+                yield b''.join([f.bytes for f in voiced_frames])
+                ring_buffer.clear()
+                voiced_frames = []
+    if triggered:
+        sys.stdout.write('-(%s)' % (frame.timestamp + frame.duration))
+    sys.stdout.write('\n')
+    # If we have any leftover voiced audio when we run out of input,
+    # yield it.
+    if voiced_frames:
+        yield b''.join([f.bytes for f in voiced_frames])
+
+
+def cut_signals(signal, intervals=1, sr=8000, as_bytes=True):
+    cut_signals_list = []
+    if as_bytes:
+        len_window = sr * intervals
+        for i in range(int(len(signal) // len_window)):
+            cut_signals_list.append(signal[i * len_window:(i + 1) * len_window])
+
+    return cut_signals_list
+
+
+def get_audio_vad_processed(audio_file, aggressiveness, wav=True, save_files=False, save_folder=''):
+
+    audio, sample_rate = read_wave(audio_file, wav=wav)
+    vad = webrtcvad.Vad(aggressiveness)
+    frames = frame_generator(30, audio, sample_rate)
+    frames = list(frames)
+    segments = vad_collector(sample_rate, 30, 100, vad, frames)
+
+    compound_signal = []
+
+    for i, segment in enumerate(segments):
+        # print('type of segment', type(segment))
+        # print('length of segment', len(segment))
+        compound_signal.extend(struct.unpack(int(len(segment) // 2) * 'h', segment))
+        # write_wave(f'test_audio/{i}_cmp_signal.wav', segment, sample_rate)
+
+    compound_signal = np.array(compound_signal) / 32768
+    cut_signals_list = cut_signals(compound_signal)
+
+    if save_files:
+        for j, sig in enumerate(cut_signals_list):
+            file_path = os.path.join(save_folder, str(j) + os.path.basename(audio_file))
+            sf.write(file_path, sig, samplerate=sample_rate)
+
+    return cut_signals_list
 
 
 class PredictGenderNoise:
@@ -144,10 +281,9 @@ class PredictGenderNoise:
     def load_audio_model(self, model_path):
         self.model = load_model(model_path)
 
-    def analyze(self, file):
+    def analyze(self, file, wav):
         gender_dict = {0: 'Female', 1: 'Male', 2: 'Noise'}
-        file_cleaned = clean_and_cut_audio(file, 8000, 0.3, 60, 1, 0.02)
-        signals_cut_array = cut_signal(file=file_cleaned, amplify=1, use_array=True)
+        signals_cut_array = get_audio_vad_processed(file, 2, wav=wav, save_files=False, save_folder='')
         # print(len(signals_cut_array))
         gender = None
         if len(signals_cut_array) == 0:
@@ -207,145 +343,3 @@ class PredictGenderNoise:
                         break
 
         return gender
-
-
-def get_frames_with_speech(signal, s_rate, greed_level, frame_duration):
-    """
-    Получаем фреймы длинной frame_duration
-    :param signal: array, сигнал для обработки
-    :param s_rate: int, sampling rate
-    :param greed_level: int, [0,3] - 0 пропускаем много звуков, 3 - пропускаем мало звуков
-    :param frame_duration: float, [0.01, 0.02, 0.03] - длина фрейма в секундах
-    :return:
-    frames_with_speech - array, массив с фреймами, в которых есть "шум"
-    """
-
-    vad = webrtcvad.Vad(greed_level)
-
-    audio_length = len(signal) / s_rate
-    n_frames = int(audio_length / frame_duration)
-    n_signal_cutoffs = int(s_rate * frame_duration)  # number of signal cutoffs to be passed to webrtc (as 1 frame)
-
-    frames_with_speech = []
-
-    for i in range(n_frames):
-        sig_to_prcs = np.int16(signal[i * n_signal_cutoffs: (i + 1) * n_signal_cutoffs] * 32768).tobytes()
-        is_speech = vad.is_speech(sig_to_prcs, s_rate)
-        frames_with_speech.append(is_speech)
-
-    return frames_with_speech
-
-
-def get_grouped_frames(frames_with_speech, frame_duration, window):
-    """
-    Группируем фреймы с шумом.
-    :param frames_with_speech: arr, фреймы с шумом (или речью)
-    :param frame_duration: [0.01, 0.02, 0.03] - длина фрейма в секундах
-    :param window: float, окно для нарезки аудио в секундах
-    :return:
-    grouped_frames - array, сигнал сгруппированный по фреймам со звуком
-    n_frames_in_group - int, кол-во фреймов в группе
-    """
-    n_window_frames = int(len(frames_with_speech) * frame_duration / window)
-    grouped_frames = [[] for wdw in range(n_window_frames)]
-
-    n_frames_in_group = int(window / frame_duration)
-
-    for i in range(len(grouped_frames)):
-        grouped_frames[i].extend(frames_with_speech[i * n_frames_in_group: (i + 1) * n_frames_in_group])
-
-    return grouped_frames, n_frames_in_group
-
-
-def get_speech_intervals(grouped_frames, threshold_speech, n_frames_in_group, s_rate, window):
-    """
-    Получаем интервалы со звуком.
-    :param grouped_frames: array, сгруппированный сигнал с фреймами
-    :param threshold_speech: [0, 100], порог в процентах. Какой процент фреймов с шумом мы берем, чтобы считать группу
-    с речью/шумом.
-    :param n_frames_in_group: кол-во фреймов в группе
-    :param s_rate: int, семплинг рейт
-    :param window: float, окно для нарезки аудио в секундах
-    :return:
-    speech_intervals - array, инетрвалы сигнала со звуком
-    """
-    speech_in_group = []
-
-    for group in grouped_frames:
-        percentage_speech_true = group.count(True) / n_frames_in_group
-        if percentage_speech_true > threshold_speech / 100.0:
-            speech_in_group.append(1)
-        else:
-            speech_in_group.append(0)
-
-    print(speech_in_group)
-    speech_indexes = np.where(np.array(speech_in_group) == 1)[0]
-    print(speech_indexes)
-
-    speech_intervals = []
-
-    for i, idx in enumerate(speech_indexes):
-        speech_intervals.append([int(idx * s_rate * window)])
-        speech_intervals[i].extend([int((idx + 1) * s_rate * window)])
-        print(speech_intervals)
-
-    return speech_intervals
-
-
-def get_compound_speech_signal(speech_intervals, signal):
-    """
-    Из массива массивов получаем 1 сигнал.
-    :param speech_intervals: array, инетрвалы сигнала со звуком
-    :param signal: array, изначальный сигнал
-    :return:
-    compound_signal, array - собранный сигнал из кусочков, в которых мы считаем что есть звук/шум.
-    """
-    compound_signal = []
-    for (start, end) in speech_intervals:
-        compound_signal.extend(signal[start:end])
-
-    return compound_signal
-
-
-def get_speech_fragments(signal, s_rate, window, threshold_speech, greed_level, frame_duration):
-    """
-    Получаем фрагменты с речью/шумом.
-    :param signal: array, изначальный аудио сигнал
-    :param s_rate: int, семплинг рейт
-    :param window: float, окно для нарезки аудио в секундах
-    :param threshold_speech: [0, 100], порог в процентах. Какой процент фреймов с шумом мы берем, чтобы считать группу
-    :param greed_level: int, [0,3] - 0 пропускаем много звуков, 3 - пропускаем мало звуков
-    :param frame_duration: [0.01, 0.02, 0.03] - длина фрейма в секундах
-    :return:
-    grouped_frames, array - сигнал, сгруппированный по фреймам
-    speech_intervals, array - интервалы, в которых есть речь/шум.
-    """
-    frames_with_speech = get_frames_with_speech(signal, s_rate, greed_level, frame_duration)
-
-    grouped_frames, n_frames_in_group = get_grouped_frames(frames_with_speech, frame_duration, window)
-
-    speech_intervals = get_speech_intervals(grouped_frames, threshold_speech, n_frames_in_group, s_rate, window)
-
-    return grouped_frames, speech_intervals
-
-
-def clean_and_cut_audio(signal, s_rate, window, threshold_speech, greed_level, frame_duration):
-    """
-    Проверяем сигнал на наличие отрезков аудио с повышенной энергией используя webrtcvad. Нарезаем сигнал, выбирая только
-    отрезки с повышенной энергией.
-    :param signal: array, изначальный аудио сигнал
-    :param s_rate: int, семплинг рейт
-    :param window: float, окно для нарезки аудио в секундах
-    :param threshold_speech: [0, 100], порог в процентах. Какой процент фреймов с шумом мы берем, чтобы считать группу
-    :param greed_level: int, [0,3] - 0 пропускаем много звуков, 3 - пропускаем мало звуков
-    :param frame_duration: [0.01, 0.02, 0.03] - длина фрейма в секундах
-    :return:
-    compound_signal, array - собранный сигнал из кусочков, в которых мы считаем что есть звук/шум.
-    """
-
-    grouped_frames, speech_intervals = get_speech_fragments(signal, s_rate, window, threshold_speech, greed_level,
-                                                            frame_duration)
-
-    compound_signal = get_compound_speech_signal(speech_intervals, signal)
-
-    return np.array(compound_signal)

@@ -1,10 +1,9 @@
 import os
-import librosa
 import numpy as np
 import utils
 from sklearn.metrics import f1_score
 
-audio_model = utils.PredictGenderNoise('gender_noise_model.h5')
+audio_model = utils.PredictGenderNoise('gender_model_new_vad.h5')
 
 predict = []
 female_audio_counter = 0
@@ -20,15 +19,15 @@ real_values = []
 gender_dict = {'Female': 0, 'Male': 1, 'Noise': 2}
 
 
-for folder in os.listdir(base_folder)[:6]:
+for folder in os.listdir(base_folder)[:2]:
     if int(folder[-1]) % 2 == 0:
         print('--------------supposed to be female folder----------------')
         print(folder)
         female_audio_counter += len(os.listdir(base_folder + folder))
         for file in os.listdir(base_folder + folder):
             file_path = os.path.join(base_folder, folder, file)
-            file, _ = librosa.load(file_path, sr=8000)
-            predict = audio_model.analyze(file)
+            # file, _ = librosa.load(file_path, sr=8000)
+            predict = audio_model.analyze(file_path, wav=True)
             if predict == 'Female':
                 correct_answers += 1
             else:
@@ -42,8 +41,8 @@ for folder in os.listdir(base_folder)[:6]:
         male_audio_counter += len(os.listdir(base_folder + folder))
         for file in os.listdir(base_folder + folder):
             file_path = os.path.join(base_folder, folder, file)
-            file, _ = librosa.load(file_path, sr=8000)
-            predict = audio_model.analyze(file)
+            # file, _ = librosa.load(file_path, sr=8000)
+            predict = audio_model.analyze(file_path, wav=True)
             if predict == 'Male':
                 correct_answers += 1
             else:
@@ -55,13 +54,13 @@ for folder in os.listdir(base_folder)[:6]:
 
 noise_folder = 'C:\\Users\\ale-d\\PycharmProjects\\gender_audio_recognition\\acoustic_scenes\\audio_not_used\\'
 noise_audio_counter = 0
-nr_of_noise_sounds = 240
+nr_of_noise_sounds = 10
 
 for file in os.listdir(noise_folder)[:nr_of_noise_sounds]:
     noise_audio_counter += 1
     file_path = os.path.join(noise_folder, file)
-    file, _ = librosa.load(file_path, sr=8000)
-    predict = audio_model.analyze(file)
+    # file, _ = librosa.load(file_path, sr=8000)
+    predict = audio_model.analyze(file_path, wav=True)
     if predict == 'Noise':
         correct_answers += 1
     else:
