@@ -234,6 +234,16 @@ def vad_collector(sample_rate, frame_duration_ms,
 
 
 def cut_signals(signal, intervals=1, sr=8000, as_bytes=True):
+    """
+    Функция нарезки сигнала на куски перед подачей в НС.
+
+    :param signal: arr, сигнал, который мы будем резать на фрагменты
+    :param intervals: int or float, время в секундах c которым нарезаем дорожку перед подачей в НС.
+    :param sr: int, sampling rate
+    :param as_bytes:
+    :return:
+    cut_signals_list - list, сигнал порезанный на фрагменты
+    """
     cut_signals_list = []
     if as_bytes:
         len_window = sr * intervals
@@ -254,10 +264,7 @@ def get_audio_vad_processed(audio_file, aggressiveness, wav=True, save_files=Fal
     compound_signal = []
 
     for i, segment in enumerate(segments):
-        # print('type of segment', type(segment))
-        # print('length of segment', len(segment))
         compound_signal.extend(struct.unpack(int(len(segment) // 2) * 'h', segment))
-        # write_wave(f'test_audio/{i}_cmp_signal.wav', segment, sample_rate)
 
     compound_signal = np.array(compound_signal) / 32768
     cut_signals_list = cut_signals(compound_signal)
@@ -284,7 +291,6 @@ class PredictGenderNoise:
     def analyze(self, file, wav):
         gender_dict = {0: 'Female', 1: 'Male', 2: 'Noise'}
         signals_cut_array = get_audio_vad_processed(file, 2, wav=wav, save_files=False, save_folder='')
-        # print(len(signals_cut_array))
         gender = None
         if len(signals_cut_array) == 0:
             print('Длина аудио сигнала менее длины окна. Не смогли нарезать сигнал на window отрезки.')
@@ -298,15 +304,12 @@ class PredictGenderNoise:
 
                     gender_prediction_fragment = self.model.predict(np.expand_dims(audio_features_mfcc, 0))[0]
                     gender_prediction_array.append(gender_prediction_fragment)
-                    # print('--before_cleaning--', gender_prediction_array)
                     if len(gender_prediction_array) > 8:  # предсказываем пол минимум по 8 window отрезкам времени разговора
                         for i, pred in enumerate(
                                 gender_prediction_array):  # если есть window c высокой вероятностью отстутсвия речи - удаляем
                             if pred[2] > 0.5:
                                 del gender_prediction_array[i]
-                                # print('--just deleted noise arr--', gender_prediction_array)
                         if len(gender_prediction_array) > 4:
-                            # print('--after_cleaning--', gender_prediction_array)
                             male_female_soft_voting = sum(np.array(gender_prediction_array)) / len(
                                 gender_prediction_array)
                             winner_id = int(np.argmax(male_female_soft_voting))
@@ -322,7 +325,6 @@ class PredictGenderNoise:
                         continue
 
                 if gender is None:  # если аудио отрезок оказалася меньше 8 window
-                    print('we are here?')
                     print(gender_prediction_array)
 
                     for i, pred in enumerate(
