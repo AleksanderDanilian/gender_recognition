@@ -5,7 +5,7 @@ import librosa
 audio_model = utils.PredictGenderAgeNoise('model_gender_noise_corpus.h5', 'model_age_corpus.h5')
 
 # устанавливаем путь к файлу
-file_path = 'test_audio/male_1.wav'
+file_path = 'test_audio/fifties_female.wav'
 
 # получаем сигнал
 file, _ = librosa.load(file_path, sr=8000)
