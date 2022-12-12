@@ -109,7 +109,7 @@ def get_audio_features(file, mfcc=True, chroma_stft=False, rms=False, spec_cent=
         signal, s_rate = librosa.load(file, sr=s_rate, dtype='float32')
 
     if mfcc:
-        mfcc_ = librosa.feature.mfcc(y=signal, sr=s_rate)  # Мел кепстральные коэффициенты
+        mfcc_ = librosa.feature.mfcc(y=signal, sr=s_rate, n_mfcc=40)  # Мел кепстральные коэффициенты
         audio_features_mfcc.extend(mfcc_)  # .reshape((mfcc_.shape[1], mfcc_.shape[2])))
     if chroma_stft:
         chroma_stft_ = np.mean(librosa.feature.chroma_stft(y=signal, sr=s_rate))  # Частота цветности
@@ -133,19 +133,24 @@ def get_audio_features(file, mfcc=True, chroma_stft=False, rms=False, spec_cent=
     return audio_features_mfcc, audio_features_rest
 
 
-class PredictGenderNoise:
+class PredictGenderAgeNoise:
     """
     Класс для определения пола по аудио файлу.
     """
 
-    def __init__(self, model_path='gender_noise_model.h5'):
-        self.model = load_model(model_path, custom_objects={'f1': f1})
+    def __init__(self, model_gender_path='gender_noise_model.h5', model_age_path='my_class_model_age_corpus.h5'):
+        self.model_gender = load_model(model_gender_path, custom_objects={'f1': f1})
+        self.model_age = load_model(model_age_path)
 
-    def load_audio_model(self, model_path):
-        self.model = load_model(model_path)
+    def load_audio_gender_model(self, model_path):
+        self.model_gender = load_model(model_path)
+
+    def load_audio_age_model(self, model_path):
+        self.model_age = load_model(model_path)
 
     def analyze(self, file):
         gender_dict = {0: 'Female', 1: 'Male', 2: 'Noise'}
+        age_dict = {0: 'teens', 1: 'twenties', 2: 'thirties', 3: 'fourties', 4: 'fifties', 5: 'sixties'}
         file_cleaned = clean_and_cut_audio(file, 8000, 0.3, 60, 1, 0.02)
         signals_cut_array = cut_signal(file=file_cleaned, amplify=1, use_array=True)
         # print(len(signals_cut_array))
@@ -157,20 +162,16 @@ class PredictGenderNoise:
             gender_confirmed = False
             while not gender_confirmed:
                 gender_prediction_array = []
+                gender_prediction_mfcc_array = []
                 for signal_cut in signals_cut_array:
                     audio_features_mfcc, _ = get_audio_features(signal_cut, mfcc=True, s_rate=8000, use_array=True)
 
-                    gender_prediction_fragment = self.model.predict(np.expand_dims(audio_features_mfcc, 0))[0]
+                    gender_prediction_fragment = self.model_gender.predict(np.expand_dims(audio_features_mfcc, 0))[0]
                     gender_prediction_array.append(gender_prediction_fragment)
-                    # print('--before_cleaning--', gender_prediction_array)
+                    gender_prediction_mfcc_array.append(audio_features_mfcc)
                     if len(gender_prediction_array) > 8:  # предсказываем пол минимум по 8 window отрезкам времени разговора
-                        for i, pred in enumerate(
-                                gender_prediction_array):  # если есть window c высокой вероятностью отстутсвия речи - удаляем
-                            if pred[2] > 0.5:
-                                del gender_prediction_array[i]
-                                # print('--just deleted noise arr--', gender_prediction_array)
+                        gender_prediction_array = [item for item in gender_prediction_array if item[2] < 0.5] # удаляем arr с высокой вер. шума
                         if len(gender_prediction_array) > 4:
-                            # print('--after_cleaning--', gender_prediction_array)
                             male_female_soft_voting = sum(np.array(gender_prediction_array)) / len(
                                 gender_prediction_array)
                             winner_id = int(np.argmax(male_female_soft_voting))
@@ -186,17 +187,10 @@ class PredictGenderNoise:
                         continue
 
                 if gender is None:  # если аудио отрезок оказалася меньше 8 window
-                    print('we are here?')
-                    print(gender_prediction_array)
-
-                    for i, pred in enumerate(
-                            gender_prediction_array):  # если есть window c высокой вероятностью отстутсвия речи - удаляем
-                        if pred[2] > 0.5:
-                            del gender_prediction_array[i]
-                    print('after removal of dominant noise', gender_prediction_array)
+                    gender_prediction_array = [item for item in gender_prediction_array if item[2] < 0.5] # удаляем arr с выс шумом
                     if len(gender_prediction_array) > 0:
                         male_female_soft_voting = sum(np.array(gender_prediction_array)) / len(gender_prediction_array)
-                        print('soft voting', male_female_soft_voting)
+                        print('gender soft voting', male_female_soft_voting)
                         winner_id = int(np.argmax(male_female_soft_voting))
                         gender = gender_dict[winner_id]
                         gender_confirmed = True
@@ -206,7 +200,26 @@ class PredictGenderNoise:
                         gender_confirmed = True
                         break
 
-        return gender
+        if gender != 'Noise':
+            gender_prediction_mfcc_array = np.array(gender_prediction_mfcc_array)
+            if len(gender_prediction_mfcc_array) > 1:
+                print(np.array(gender_prediction_mfcc_array).shape)
+                gender_prediction_mfcc_array = gender_prediction_mfcc_array[..., np.newaxis]
+                age_prediction_array = self.model_age.predict(np.array(gender_prediction_mfcc_array))
+                age_soft_voting = sum(np.array(age_prediction_array)) / len(age_prediction_array)
+                print('mfcc array', gender_prediction_mfcc_array.shape)
+                print('age soft voting', age_soft_voting)
+                winner_id = int(np.argmax(age_soft_voting))
+                age = age_dict[winner_id]
+            else:
+                gender_prediction_mfcc_array = gender_prediction_mfcc_array[..., np.newaxis]
+                age_prediction = self.model_age.predict(gender_prediction_mfcc_array)[0]
+                winner_id = int(np.argmax(age_prediction))
+                age = age_dict[winner_id]
+        else:
+            age = 'Not defined due to Noise factor'
+
+        return gender, age
 
 
 def get_frames_with_speech(signal, s_rate, greed_level, frame_duration):
@@ -278,16 +291,13 @@ def get_speech_intervals(grouped_frames, threshold_speech, n_frames_in_group, s_
         else:
             speech_in_group.append(0)
 
-    print(speech_in_group)
     speech_indexes = np.where(np.array(speech_in_group) == 1)[0]
-    print(speech_indexes)
 
     speech_intervals = []
 
     for i, idx in enumerate(speech_indexes):
         speech_intervals.append([int(idx * s_rate * window)])
         speech_intervals[i].extend([int((idx + 1) * s_rate * window)])
-        print(speech_intervals)
 
     return speech_intervals
 
