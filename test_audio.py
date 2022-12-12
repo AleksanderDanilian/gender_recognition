@@ -4,7 +4,7 @@ import numpy as np
 import utils
 from sklearn.metrics import f1_score
 
-audio_model = utils.PredictGenderAgeNoise('gender_noise_model.h5')
+audio_model = utils.PredictGenderAgeNoise('model_gender_noise_corpus.h5', 'model_age_corpus.h5')
 
 predict = []
 female_audio_counter = 0
