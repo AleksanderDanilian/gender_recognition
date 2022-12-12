@@ -138,7 +138,7 @@ class PredictGenderAgeNoise:
     Класс для определения пола по аудио файлу.
     """
 
-    def __init__(self, model_gender_path='gender_noise_model.h5', model_age_path='my_class_model_age_corpus.h5'):
+    def __init__(self, model_gender_path='model_gender_noise_corpus.h5', model_age_path='model_age_corpus.h5'):
         self.model_gender = load_model(model_gender_path, custom_objects={'f1': f1})
         self.model_age = load_model(model_age_path)
 
