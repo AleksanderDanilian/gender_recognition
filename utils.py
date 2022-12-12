@@ -254,7 +254,6 @@ def cut_signals(signal, intervals=1, sr=8000, as_bytes=True):
 
 
 def get_audio_vad_processed(audio_file, aggressiveness, wav=True, save_files=False, save_folder=''):
-
     audio, sample_rate = read_wave(audio_file, wav=wav)
     vad = webrtcvad.Vad(aggressiveness)
     frames = frame_generator(30, audio, sample_rate)
@@ -264,33 +263,38 @@ def get_audio_vad_processed(audio_file, aggressiveness, wav=True, save_files=Fal
     compound_signal = []
 
     for i, segment in enumerate(segments):
-        compound_signal.extend(struct.unpack(int(len(segment) // 2) * 'h', segment))
+        compound_signal.extend(struct.unpack(int(len(segment) // 2) * 'h', segment)) # здесь, вероятно, ошибка
 
     compound_signal = np.array(compound_signal) / 32768
     cut_signals_list = cut_signals(compound_signal)
 
     if save_files:
         for j, sig in enumerate(cut_signals_list):
-            file_path = os.path.join(save_folder, str(j) + os.path.basename(audio_file))
+            file_path = os.path.join(save_folder, str(j) + '.wav')
             sf.write(file_path, sig, samplerate=sample_rate)
 
     return cut_signals_list
 
 
-class PredictGenderNoise:
+class PredictGenderAgeNoise:
     """
     Класс для определения пола по аудио файлу.
     """
 
-    def __init__(self, model_path='gender_noise_model.h5'):
-        self.model = load_model(model_path, custom_objects={'f1': f1})
+    def __init__(self, model_gender_path='gender_model_new_vad.h5', model_age_path='my_class_model_age_corpus.h5'):
+        self.model_gender = load_model(model_gender_path, custom_objects={'f1': f1})
+        self.model_age = load_model(model_age_path)
 
-    def load_audio_model(self, model_path):
-        self.model = load_model(model_path)
+    def load_audio_gender_model(self, model_path):
+        self.model_gender = load_model(model_path)
+
+    def load_audio_age_model(self, model_path):
+        self.model_age = load_model(model_path)
 
     def analyze(self, file, wav):
         gender_dict = {0: 'Female', 1: 'Male', 2: 'Noise'}
-        signals_cut_array = get_audio_vad_processed(file, 2, wav=wav, save_files=False, save_folder='')
+        age_dict = {0: 'teens', 1: 'twenties', 2: 'thirties', 3: 'fourties', 4: 'fifties', 5: 'sixties'}
+        signals_cut_array = get_audio_vad_processed(file, 2, wav=wav, save_files=True, save_folder='test_audio')
         gender = None
         if len(signals_cut_array) == 0:
             print('Длина аудио сигнала менее длины окна. Не смогли нарезать сигнал на window отрезки.')
@@ -299,19 +303,20 @@ class PredictGenderNoise:
             gender_confirmed = False
             while not gender_confirmed:
                 gender_prediction_array = []
+                gender_prediction_mfcc_array = []
                 for signal_cut in signals_cut_array:
                     audio_features_mfcc, _ = get_audio_features(signal_cut, mfcc=True, s_rate=8000, use_array=True)
 
-                    gender_prediction_fragment = self.model.predict(np.expand_dims(audio_features_mfcc, 0))[0]
+                    gender_prediction_fragment = self.model_gender.predict(np.expand_dims(audio_features_mfcc, 0))[0]
                     gender_prediction_array.append(gender_prediction_fragment)
+                    gender_prediction_mfcc_array.append(audio_features_mfcc)
                     if len(gender_prediction_array) > 8:  # предсказываем пол минимум по 8 window отрезкам времени разговора
-                        for i, pred in enumerate(
-                                gender_prediction_array):  # если есть window c высокой вероятностью отстутсвия речи - удаляем
-                            if pred[2] > 0.5:
-                                del gender_prediction_array[i]
+                        gender_prediction_array = [item for item in gender_prediction_array if item[2] < 0.5]
+
                         if len(gender_prediction_array) > 4:
                             male_female_soft_voting = sum(np.array(gender_prediction_array)) / len(
                                 gender_prediction_array)
+                            print('gender soft_voting', male_female_soft_voting)
                             winner_id = int(np.argmax(male_female_soft_voting))
                             if male_female_soft_voting[winner_id] > 0.5:
                                 gender = gender_dict[winner_id]
@@ -326,15 +331,12 @@ class PredictGenderNoise:
 
                 if gender is None:  # если аудио отрезок оказалася меньше 8 window
                     print(gender_prediction_array)
+                    gender_prediction_array = [item for item in gender_prediction_array if item[2] < 0.5]
 
-                    for i, pred in enumerate(
-                            gender_prediction_array):  # если есть window c высокой вероятностью отстутсвия речи - удаляем
-                        if pred[2] > 0.5:
-                            del gender_prediction_array[i]
                     print('after removal of dominant noise', gender_prediction_array)
                     if len(gender_prediction_array) > 0:
                         male_female_soft_voting = sum(np.array(gender_prediction_array)) / len(gender_prediction_array)
-                        print('soft voting', male_female_soft_voting)
+                        print('gender soft voting', male_female_soft_voting)
                         winner_id = int(np.argmax(male_female_soft_voting))
                         gender = gender_dict[winner_id]
                         gender_confirmed = True
@@ -344,4 +346,23 @@ class PredictGenderNoise:
                         gender_confirmed = True
                         break
 
-        return gender
+        if gender != 'Noise':
+            gender_prediction_mfcc_array = np.array(gender_prediction_mfcc_array)
+            if len(gender_prediction_mfcc_array) > 1:
+                print(np.array(gender_prediction_mfcc_array).shape)
+                gender_prediction_mfcc_array = gender_prediction_mfcc_array[..., np.newaxis]
+                age_prediction_array = self.model_age.predict(np.array(gender_prediction_mfcc_array))
+                age_soft_voting = sum(np.array(age_prediction_array)) / len(age_prediction_array)
+                print('mfcc array', gender_prediction_mfcc_array.shape)
+                print('age soft voting', age_soft_voting)
+                winner_id = int(np.argmax(age_soft_voting))
+                age = age_dict[winner_id]
+            else:
+                gender_prediction_mfcc_array = gender_prediction_mfcc_array[..., np.newaxis]
+                age_prediction = self.model_age.predict(gender_prediction_mfcc_array)[0]
+                winner_id = int(np.argmax(age_prediction))
+                age = age_dict[winner_id]
+        else:
+            age = 'Not defined due to Noise factor'
+
+        return gender, age

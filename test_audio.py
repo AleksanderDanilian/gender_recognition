@@ -3,7 +3,8 @@ import numpy as np
 import utils
 from sklearn.metrics import f1_score
 
-audio_model = utils.PredictGenderNoise('gender_model_new_vad.h5')
+audio_model = utils.PredictGenderAgeNoise(model_gender_path='gender_model_new_vad.h5',
+                                          model_age_path='my_class_model_corpus.h5')
 
 predict = []
 female_audio_counter = 0
@@ -19,7 +20,7 @@ real_values = []
 gender_dict = {'Female': 0, 'Male': 1, 'Noise': 2}
 
 
-for folder in os.listdir(base_folder)[:2]:
+for folder in os.listdir(base_folder)[:4]:
     if int(folder[-1]) % 2 == 0:
         print('--------------supposed to be female folder----------------')
         print(folder)
@@ -27,7 +28,8 @@ for folder in os.listdir(base_folder)[:2]:
         for file in os.listdir(base_folder + folder):
             file_path = os.path.join(base_folder, folder, file)
             # file, _ = librosa.load(file_path, sr=8000)
-            predict = audio_model.analyze(file_path, wav=True)
+            predict, age = audio_model.analyze(file_path, wav=True)
+            print(predict, age)
             if predict == 'Female':
                 correct_answers += 1
             else:
@@ -42,7 +44,8 @@ for folder in os.listdir(base_folder)[:2]:
         for file in os.listdir(base_folder + folder):
             file_path = os.path.join(base_folder, folder, file)
             # file, _ = librosa.load(file_path, sr=8000)
-            predict = audio_model.analyze(file_path, wav=True)
+            predict, age = audio_model.analyze(file_path, wav=True)
+            print(predict, age)
             if predict == 'Male':
                 correct_answers += 1
             else:
@@ -60,7 +63,7 @@ for file in os.listdir(noise_folder)[:nr_of_noise_sounds]:
     noise_audio_counter += 1
     file_path = os.path.join(noise_folder, file)
     # file, _ = librosa.load(file_path, sr=8000)
-    predict = audio_model.analyze(file_path, wav=True)
+    predict, age = audio_model.analyze(file_path, wav=True)
     if predict == 'Noise':
         correct_answers += 1
     else:
